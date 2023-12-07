@@ -23,6 +23,7 @@ import (
 
 	"github.com/pkg/errors"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/discovery"
@@ -39,9 +40,30 @@ type lookupFunc = func(apiversion string, resource string, namespace string, nam
 // This function is considered deprecated, and will be renamed in Helm 4. It will no
 // longer be a public function.
 func NewLookupFunction(config *rest.Config) lookupFunc {
-	return func(apiversion string, resource string, namespace string, name string) (map[string]interface{}, error) {
+	return newLookupFunctionForConfig(config)
+}
+
+func newLookupFunctionForClient(client dynamic.Interface) lookupFunc {
+	return newLookupFunction(func(apiVersion, kind string) (dynamic.NamespaceableResourceInterface, bool, error) {
+		// This is suboptimal but the best kind->resource translation we can do without a discovery client.
+		gvr, _ := meta.UnsafeGuessKindToResource(schema.FromAPIVersionAndKind(apiVersion, kind))
+		namespaced := true // we infer this from the namespace argument to the lookup function
+		return client.Resource(gvr), namespaced, nil
+	})
+}
+
+func newLookupFunctionForConfig(config *rest.Config) lookupFunc {
+	return newLookupFunction(func(apiVersion, kind string) (dynamic.NamespaceableResourceInterface, bool, error) {
+		return getDynamicClientOnKind(apiVersion, kind, config)
+	})
+}
+
+type clientProviderFunc func(apiVersion, kind string) (dynamic.NamespaceableResourceInterface, bool, error)
+
+func newLookupFunction(getClient clientProviderFunc) lookupFunc {
+	return func(apiversion string, kind string, namespace string, name string) (map[string]interface{}, error) {
 		var client dynamic.ResourceInterface
-		c, namespaced, err := getDynamicClientOnKind(apiversion, resource, config)
+		c, namespaced, err := getClient(apiversion, kind)
 		if err != nil {
 			return map[string]interface{}{}, err
 		}
